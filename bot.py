@@ -10,7 +10,6 @@ SETTINGS_FILE = "settings.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -34,7 +33,7 @@ def save_settings():
 settings = load_settings()
 
 # -------------------------
-# GAME STATE (PER SERVER FIX)
+# GAME DATA (PER SERVER)
 # -------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -44,7 +43,6 @@ def load_data():
                 return json.loads(content) if content else {}
         except:
             return {}
-
     return {}
 
 def save_data():
@@ -54,15 +52,14 @@ def save_data():
 data = load_data()
 
 def get_guild(guild_id):
-    if str(guild_id) not in data:
-        data[str(guild_id)] = {
+    gid = str(guild_id)
+    if gid not in data:
+        data[gid] = {
             "count": 0,
             "last_user": None,
-            "lives": 3,
-            "paused": False,
-            "last_message_id": None
+            "lives": 3
         }
-    return data[str(guild_id)]
+    return data[gid]
 
 # -------------------------
 # SET CHANNEL COMMAND
@@ -101,39 +98,38 @@ async def on_message(message):
     number = int(message.content)
     expected = state["count"] + 1
 
-    # paused check (PER SERVER NOW)
-    if state["paused"]:
-        await message.add_reaction("⏸️")
-        return
-
+    # wrong user twice rule
     if message.author.id == state["last_user"]:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
+    # wrong number rule
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
+    # correct
     await message.add_reaction("✅")
 
     state["count"] = number
     state["last_user"] = message.author.id
 
+    # milestone bonus
     if number % 1000 == 0:
         state["lives"] = 3
-        await message.channel.send(f"🎉 Milestone {number}! Lives restored ❤️❤️❤️")
+        await message.channel.send(
+            f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
+        )
 
     save_data()
     await bot.process_commands(message)
 
 # -------------------------
-# WRONG HANDLER (FIXED)
+# WRONG HANDLER (NO PAUSE)
 # -------------------------
 async def handle_wrong(message, state, expected, reason):
 
     state["lives"] -= 1
-    state["paused"] = True
-    state["last_message_id"] = message.id
 
     await message.add_reaction("❌")
 
@@ -142,53 +138,24 @@ async def handle_wrong(message, state, expected, reason):
     await message.channel.send(
         f"❌ {reason}\n"
         f"Expected: {expected}\n"
-        f"Lives: {hearts if hearts else '0'}\n\n"
-        f"React ❤️ to continue."
+        f"Lives left: {hearts if hearts else '0'}"
     )
 
+    # RESET if no lives
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
-        state["paused"] = False
         state["last_user"] = None
 
-        await message.channel.send("💥 Game Reset!")
+        await message.channel.send("💥 Game Reset! Starting again from 1.")
 
     save_data()
 
 # -------------------------
-# REACTION FIX (IMPORTANT)
-# -------------------------
-@bot.event
-async def on_reaction_add(reaction, user):
-
-    if user.bot:
-        return
-
-    guild_id = str(reaction.message.guild.id)
-    state = get_guild(guild_id)
-
-    if not state["paused"]:
-        return
-
-    if reaction.message.id != state["last_message_id"]:
-        return
-
-    if str(reaction.emoji) != "❤️":
-        return
-
-    state["paused"] = False
-    save_data()
-
-    await reaction.message.channel.send(
-        f"❤️ Resumed! Next number: {state['count'] + 1}"
-    )
-
-# -------------------------
-# START
+# START BOT
 # -------------------------
 if not TOKEN:
-    raise ValueError("Missing DISCORD_TOKEN")
+    raise ValueError("DISCORD_TOKEN missing in environment variables")
 
 print("Bot starting...")
 bot.run(TOKEN)
