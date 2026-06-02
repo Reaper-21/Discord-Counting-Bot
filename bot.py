@@ -7,8 +7,9 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-SETTINGS_FILE = "settings.json"
+
 DATA_FILE = "game.json"
+SETTINGS_FILE = "settings.json"
 
 # -------------------------
 # INTENTS
@@ -20,12 +21,18 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# SERVER SETTINGS (CHANNEL PER GUILD)
+# SERVER CHANNEL SETTINGS
 # -------------------------
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                content = f.read().strip()
+                if not content:
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 def save_settings():
@@ -35,19 +42,35 @@ def save_settings():
 guild_channels = load_settings()
 
 # -------------------------
-# GAME DATA
+# GAME DATA (SAFE JSON)
 # -------------------------
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {
+    default = {
         "count": 0,
         "last_user": None,
         "lives": 3,
         "paused": False,
         "last_message_id": None
     }
+
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w") as f:
+            json.dump(default, f, indent=4)
+        return default
+
+    try:
+        with open(DATA_FILE, "r") as f:
+            content = f.read().strip()
+
+            if not content:
+                return default
+
+            return json.loads(content)
+
+    except json.JSONDecodeError:
+        with open(DATA_FILE, "w") as f:
+            json.dump(default, f, indent=4)
+        return default
 
 def save_data():
     global data
@@ -57,14 +80,14 @@ def save_data():
 data = load_data()
 
 # -------------------------
-# READY
+# READY EVENT
 # -------------------------
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
 # -------------------------
-# SET CHANNEL COMMAND (ADMIN)
+# SET CHANNEL COMMAND
 # -------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -74,7 +97,7 @@ async def setchannel(ctx):
 
     await ctx.send(
         f"✅ Counting channel set to {ctx.channel.mention}\n"
-        f"Bot will now only work here."
+        f"Bot will now only work in this channel."
     )
 
 # -------------------------
@@ -122,7 +145,7 @@ async def on_message(message):
     data["count"] = number
     data["last_user"] = message.author.id
 
-    # milestone
+    # milestone reset
     if number % 1000 == 0:
         data["lives"] = 3
         await message.channel.send(
@@ -194,7 +217,5 @@ async def on_reaction_add(reaction, user):
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN is missing in environment variables!")
 
-print("TOKEN LOADED:", repr(TOKEN))
-print("Starting bot...")
-
+print("Bot starting...")
 bot.run(TOKEN)
