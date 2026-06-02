@@ -7,7 +7,7 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1511334288082079845  # <-- CHANGE THIS
+CHANNEL_ID = 1511334288082079845  # your counting channel ID
 
 DATA_FILE = "game.json"
 
@@ -49,13 +49,14 @@ def load_data():
         }
 
 def save_data():
+    global data
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 data = load_data()
 
 # -------------------------
-# READY
+# READY EVENT
 # -------------------------
 @bot.event
 async def on_ready():
@@ -91,13 +92,13 @@ async def on_message(message):
         await handle_wrong(message, expected, "Wrong number")
         return
 
-    # correct
+    # correct answer
     await message.add_reaction("✅")
 
     data["count"] = number
     data["last_user"] = message.author.id
 
-    # milestone
+    # milestone reset lives
     if number % 1000 == 0:
         data["lives"] = 3
         await message.channel.send(
@@ -105,6 +106,9 @@ async def on_message(message):
         )
 
     save_data()
+
+    # IMPORTANT: allows commands to still work
+    await bot.process_commands(message)
 
 # -------------------------
 # WRONG HANDLER
@@ -155,18 +159,19 @@ async def on_reaction_add(reaction, user):
         return
 
     data["paused"] = False
+    save_data()
 
     await reaction.message.channel.send(
         f"❤️ Resumed! Next number is {data['count'] + 1}"
     )
 
-    save_data()
-
 # -------------------------
-# RUN BOT
+# RUN BOT (SAFE)
 # -------------------------
 if not TOKEN:
-    print("ERROR: TOKEN not found in environment variables!")
+    raise ValueError("DISCORD_TOKEN is missing in environment variables!")
+
 print("TOKEN LOADED:", repr(TOKEN))
+print("Starting bot...")
 
 bot.run(TOKEN)
