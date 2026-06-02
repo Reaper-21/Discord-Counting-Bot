@@ -7,7 +7,8 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = 123456789012345678  # 🔁 replace with your counting channel ID
+CHANNEL_ID = 123456789012345678  # <-- CHANGE THIS
+
 DATA_FILE = "game.json"
 
 # -------------------------
@@ -20,7 +21,7 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# DATA HANDLING
+# SAFE DATA LOAD
 # -------------------------
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -35,8 +36,17 @@ def load_data():
             json.dump(data, f, indent=4)
         return data
 
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {
+            "count": 0,
+            "last_user": None,
+            "lives": 3,
+            "paused": False,
+            "last_message_id": None
+        }
 
 def save_data():
     with open(DATA_FILE, "w") as f:
@@ -45,14 +55,14 @@ def save_data():
 data = load_data()
 
 # -------------------------
-# BOT READY
+# READY
 # -------------------------
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
 # -------------------------
-# MESSAGE HANDLER
+# MESSAGE EVENT
 # -------------------------
 @bot.event
 async def on_message(message):
@@ -69,28 +79,25 @@ async def on_message(message):
     number = int(message.content)
     expected = data["count"] + 1
 
-    # paused state (waiting for ❤️)
     if data["paused"]:
         await message.add_reaction("⏸️")
         return
 
-    # same user twice rule
     if message.author.id == data["last_user"]:
         await handle_wrong(message, expected, "Same user cannot count twice")
         return
 
-    # wrong number
     if number != expected:
         await handle_wrong(message, expected, "Wrong number")
         return
 
-    # correct number
+    # correct
     await message.add_reaction("✅")
 
     data["count"] = number
     data["last_user"] = message.author.id
 
-    # milestone every 1000
+    # milestone
     if number % 1000 == 0:
         data["lives"] = 3
         await message.channel.send(
@@ -119,21 +126,18 @@ async def handle_wrong(message, expected, reason):
         f"React ❤️ to continue from last correct number."
     )
 
-    # reset if lives reach 0
     if data["lives"] <= 0:
         data["count"] = 0
         data["lives"] = 3
         data["paused"] = False
         data["last_user"] = None
 
-        await message.channel.send(
-            "💥 Game Reset! Lives depleted. Starting again from 1."
-        )
+        await message.channel.send("💥 Game Reset! Starting again from 1.")
 
     save_data()
 
 # -------------------------
-# REACTION HANDLER (❤️ RESUME)
+# REACTION EVENT
 # -------------------------
 @bot.event
 async def on_reaction_add(reaction, user):
@@ -161,4 +165,7 @@ async def on_reaction_add(reaction, user):
 # -------------------------
 # RUN BOT
 # -------------------------
+if not TOKEN:
+    print("ERROR: TOKEN not found in environment variables!")
+
 bot.run(TOKEN)
