@@ -7,7 +7,7 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = 123456789012345678  # <-- CHANGE THIS
+CHANNEL_ID = 1511334288082079845  # <-- CHANGE THIS
 
 DATA_FILE = "game.json"
 
