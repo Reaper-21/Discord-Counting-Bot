@@ -7,7 +7,7 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1511334288082079845  # your counting channel ID
+CHANNEL_ID = 1511334289084514416  # your counting channel ID
 
 DATA_FILE = "game.json"
 
