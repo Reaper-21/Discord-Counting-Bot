@@ -228,10 +228,12 @@ async def handle_wrong(
     except:
         pass
 
+    hearts = "❤️" * max(state["lives"], 0)
+
     await message.channel.send(
         f"❌ {reason}\n"
         f"Expected: {expected}\n"
-        f"Lives: {state['lives']}"
+        f"Lives: {hearts if hearts else '0'}"
     )
 
     if state["lives"] <= 0:
