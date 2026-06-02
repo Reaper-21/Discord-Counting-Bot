@@ -4,6 +4,9 @@ import json
 import os
 import asyncio
 
+# -------------------------
+# CONFIG
+# -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATA_FILE = "game.json"
@@ -15,7 +18,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# LOCK PER GUILD (VERY IMPORTANT)
+# LOCKS (prevents duplicate processing)
 # -------------------------
 guild_locks = {}
 
@@ -35,14 +38,14 @@ def load_settings():
             return {}
     return {}
 
-settings = load_settings()
-
 def save_settings():
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=4)
 
+settings = load_settings()
+
 # -------------------------
-# DATA
+# GAME DATA
 # -------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -52,30 +55,39 @@ def load_data():
             return {}
     return {}
 
-data = load_data()
-
 def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
+data = load_data()
+
+# -------------------------
+# INIT GUILD STATE
+# -------------------------
 def get_state(gid):
     gid = str(gid)
+
     if gid not in data:
-        data[gid] = {"count": 0, "last_user": None, "lives": 3}
+        data[gid] = {
+            "count": 0,
+            "last_user": None,
+            "lives": 3
+        }
+
     return data[gid]
 
 # -------------------------
-# CHANNEL SETUP
+# SET CHANNEL
 # -------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
     settings[str(ctx.guild.id)] = ctx.channel.id
     save_settings()
-    await ctx.send("✅ Channel set")
+    await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
 
 # -------------------------
-# MAIN LOGIC (STABLE)
+# MAIN LOGIC (FIXED + STABLE)
 # -------------------------
 @bot.event
 async def on_message(message):
@@ -88,36 +100,50 @@ async def on_message(message):
 
     gid = str(message.guild.id)
 
+    # channel restriction
     if gid in settings and message.channel.id != settings[gid]:
         return
 
     if not message.content.isdigit():
         return
 
-    async with get_lock(gid):  # 🔥 STOPS ALL DUPLICATES
+    async with get_lock(gid):  # 🔥 CRITICAL: prevents duplicate runs
 
         state = get_state(gid)
 
         number = int(message.content)
         expected = state["count"] + 1
 
-        # RULE 1
+        # =========================
+        # RULE 1: SAME USER FIRST
+        # =========================
         if state["last_user"] == message.author.id:
             await handle_wrong(message, state, expected, "Same user cannot count twice")
             save_data()
             return
 
-        # RULE 2
+        # =========================
+        # RULE 2: WRONG NUMBER
+        # =========================
         if number != expected:
             await handle_wrong(message, state, expected, "Wrong number")
             save_data()
             return
 
-        # SUCCESS
+        # =========================
+        # RULE 3: CORRECT
+        # =========================
         await message.add_reaction("✅")
 
         state["count"] = number
         state["last_user"] = message.author.id
+
+        # milestone
+        if number % 1000 == 0:
+            state["lives"] = 3
+            await message.channel.send(
+                f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
+            )
 
         save_data()
 
@@ -130,8 +156,12 @@ async def handle_wrong(message, state, expected, reason):
 
     await message.add_reaction("❌")
 
+    hearts = "❤️" * max(state["lives"], 0)
+
     await message.channel.send(
-        f"❌ {reason}\nExpected: {expected}\nLives: {state['lives']}"
+        f"❌ {reason}\n"
+        f"Expected: {expected}\n"
+        f"Lives: {hearts if hearts else '0'}"
     )
 
     if state["lives"] <= 0:
@@ -139,9 +169,13 @@ async def handle_wrong(message, state, expected, reason):
         state["lives"] = 3
         state["last_user"] = None
 
-        await message.channel.send("💥 Reset → back to 1")
+        await message.channel.send("💥 Game Reset! Starting again from 1.")
 
 # -------------------------
-# START
+# START BOT
 # -------------------------
+if not TOKEN:
+    raise ValueError("DISCORD_TOKEN missing")
+
+print("Bot starting...")
 bot.run(TOKEN)
