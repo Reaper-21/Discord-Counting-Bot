@@ -17,6 +17,11 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
+# GLOBAL LOCK (🔥 FIX FOR DUPLICATE EVENTS)
+# -------------------------
+processed_messages = set()
+
+# -------------------------
 # SETTINGS
 # -------------------------
 def load_settings():
@@ -54,9 +59,6 @@ def save_data():
 
 data = load_data()
 
-# -------------------------
-# GET / INIT GUILD DATA
-# -------------------------
 def get_guild(guild_id):
     gid = str(guild_id)
 
@@ -70,7 +72,7 @@ def get_guild(guild_id):
     return data[gid]
 
 # -------------------------
-# SET CHANNEL COMMAND
+# SET CHANNEL
 # -------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -80,7 +82,7 @@ async def setchannel(ctx):
     await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
 
 # -------------------------
-# MESSAGE EVENT (FIXED CORE LOGIC)
+# MESSAGE EVENT (FIXED WITH GLOBAL LOCK)
 # -------------------------
 @bot.event
 async def on_message(message):
@@ -91,8 +93,18 @@ async def on_message(message):
     if not message.guild:
         return
 
-    # channel restriction
+    # 🔥 GLOBAL MESSAGE LOCK (CRITICAL FIX)
+    if message.id in processed_messages:
+        return
+    processed_messages.add(message.id)
+
+    # prevent memory overflow
+    if len(processed_messages) > 10000:
+        processed_messages.clear()
+
     guild_id = str(message.guild.id)
+
+    # channel restriction
     if guild_id in settings:
         if message.channel.id != settings[guild_id]:
             return
@@ -105,27 +117,22 @@ async def on_message(message):
     number = int(message.content)
     expected = state["count"] + 1
 
-    # -------------------------
-    # IMPORTANT FIX: STRICT SINGLE OUTCOME PER MESSAGE
-    # -------------------------
-
-    # RULE 1: same user (highest priority)
+    # RULE 1
     if state["last_user"] == message.author.id:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
-    # RULE 2: wrong number
+    # RULE 2
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
-    # RULE 3: correct number
+    # SUCCESS
     await message.add_reaction("✅")
 
     state["count"] = number
     state["last_user"] = message.author.id
 
-    # milestone
     if number % 1000 == 0:
         state["lives"] = 3
         await message.channel.send(
@@ -135,11 +142,10 @@ async def on_message(message):
     save_data()
 
 # -------------------------
-# WRONG HANDLER (FIXED - NO CASCADE BUGS)
+# WRONG HANDLER
 # -------------------------
 async def handle_wrong(message, state, expected, reason):
 
-    # reduce lives
     state["lives"] -= 1
 
     await message.add_reaction("❌")
@@ -152,7 +158,6 @@ async def handle_wrong(message, state, expected, reason):
         f"Lives left: {hearts if hearts else '0'}"
     )
 
-    # reset if dead
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
@@ -163,10 +168,10 @@ async def handle_wrong(message, state, expected, reason):
     save_data()
 
 # -------------------------
-# START BOT
+# START
 # -------------------------
 if not TOKEN:
-    raise ValueError("DISCORD_TOKEN missing in environment variables")
+    raise ValueError("DISCORD_TOKEN missing")
 
 print("Bot starting...")
 bot.run(TOKEN)
