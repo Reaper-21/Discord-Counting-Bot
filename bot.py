@@ -4,9 +4,6 @@ import json
 import os
 import asyncio
 
-# -------------------------
-# CONFIG
-# -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATA_FILE = "game.json"
@@ -18,7 +15,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# LOCKS (CRITICAL FIX)
+# LOCK PER GUILD (VERY IMPORTANT)
 # -------------------------
 guild_locks = {}
 
@@ -33,59 +30,52 @@ def get_lock(guild_id):
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
-            with open(SETTINGS_FILE, "r") as f:
-                return json.loads(f.read() or "{}")
+            return json.loads(open(SETTINGS_FILE).read() or "{}")
         except:
             return {}
     return {}
+
+settings = load_settings()
 
 def save_settings():
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=4)
 
-settings = load_settings()
-
 # -------------------------
-# DATA (SAFE LOAD)
+# DATA
 # -------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
-            with open(DATA_FILE, "r") as f:
-                return json.loads(f.read() or "{}")
+            return json.loads(open(DATA_FILE).read() or "{}")
         except:
             return {}
     return {}
+
+data = load_data()
 
 def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-data = load_data()
-
-# -------------------------
-# GET GUILD STATE (SAFE COPY)
-# -------------------------
-def get_state(guild_id):
-    gid = str(guild_id)
-
+def get_state(gid):
+    gid = str(gid)
     if gid not in data:
         data[gid] = {"count": 0, "last_user": None, "lives": 3}
-
     return data[gid]
 
 # -------------------------
-# SET CHANNEL
+# CHANNEL SETUP
 # -------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
     settings[str(ctx.guild.id)] = ctx.channel.id
     save_settings()
-    await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
+    await ctx.send("✅ Channel set")
 
 # -------------------------
-# MESSAGE EVENT (FULL FIXED LOGIC)
+# MAIN LOGIC (STABLE)
 # -------------------------
 @bot.event
 async def on_message(message):
@@ -96,32 +86,28 @@ async def on_message(message):
     if not message.guild:
         return
 
-    guild_id = str(message.guild.id)
+    gid = str(message.guild.id)
 
-    # channel restriction
-    if guild_id in settings:
-        if message.channel.id != settings[guild_id]:
-            return
+    if gid in settings and message.channel.id != settings[gid]:
+        return
 
     if not message.content.isdigit():
         return
 
-    lock = get_lock(guild_id)
+    async with get_lock(gid):  # 🔥 STOPS ALL DUPLICATES
 
-    async with lock:   # 🔥 THIS FIXES RACE CONDITION
-
-        state = get_state(guild_id)
+        state = get_state(gid)
 
         number = int(message.content)
         expected = state["count"] + 1
 
-        # RULE 1: same user
+        # RULE 1
         if state["last_user"] == message.author.id:
             await handle_wrong(message, state, expected, "Same user cannot count twice")
             save_data()
             return
 
-        # RULE 2: wrong number
+        # RULE 2
         if number != expected:
             await handle_wrong(message, state, expected, "Wrong number")
             save_data()
@@ -132,12 +118,6 @@ async def on_message(message):
 
         state["count"] = number
         state["last_user"] = message.author.id
-
-        if number % 1000 == 0:
-            state["lives"] = 3
-            await message.channel.send(
-                f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
-            )
 
         save_data()
 
@@ -150,12 +130,8 @@ async def handle_wrong(message, state, expected, reason):
 
     await message.add_reaction("❌")
 
-    hearts = "❤️" * max(state["lives"], 0)
-
     await message.channel.send(
-        f"❌ {reason}\n"
-        f"Expected: {expected}\n"
-        f"Lives left: {hearts if hearts else '0'}"
+        f"❌ {reason}\nExpected: {expected}\nLives: {state['lives']}"
     )
 
     if state["lives"] <= 0:
@@ -163,13 +139,9 @@ async def handle_wrong(message, state, expected, reason):
         state["lives"] = 3
         state["last_user"] = None
 
-        await message.channel.send("💥 Game Reset! Starting again from 1.")
+        await message.channel.send("💥 Reset → back to 1")
 
 # -------------------------
 # START
 # -------------------------
-if not TOKEN:
-    raise ValueError("DISCORD_TOKEN missing")
-
-print("Bot starting...")
 bot.run(TOKEN)
