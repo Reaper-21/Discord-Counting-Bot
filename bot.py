@@ -1,14 +1,21 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
 import os
 import asyncio
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 # =========================
 # CONFIG
 # =========================
 TOKEN = os.getenv("DISCORD_TOKEN")
+
+# IMPORTANT:
+# Put your Render URL in Environment Variables
+# Example:
+# https://counter-bot.onrender.com
+RENDER_URL = os.getenv("RENDER_URL")
+
 DATA_FILE = "game.json"
 SETTINGS_FILE = "settings.json"
 
@@ -18,37 +25,63 @@ SETTINGS_FILE = "settings.json"
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 # =========================
-# SAFE FILE HANDLING
+# FILE LOCK
 # =========================
-lock = asyncio.Lock()
+file_lock = asyncio.Lock()
 
+# =========================
+# SAFE LOAD
+# =========================
 def safe_load(path, default):
+
     if not os.path.exists(path):
         return default
+
     try:
         with open(path, "r") as f:
             content = f.read().strip()
-            return json.loads(content) if content else default
-    except:
+
+            if not content:
+                return default
+
+            return json.loads(content)
+
+    except Exception as e:
+        print(f"Load error {path}: {e}")
         return default
 
-async def safe_save(path, data):
-    async with lock:
-        def _write():
-            with open(path, "w") as f:
-                json.dump(data, f, indent=4)
-        await asyncio.to_thread(_write)
 
+# =========================
+# SAFE SAVE
+# =========================
+async def safe_save(path, obj):
+
+    async with file_lock:
+
+        def write():
+            with open(path, "w") as f:
+                json.dump(obj, f, indent=4)
+
+        await asyncio.to_thread(write)
+
+
+# =========================
+# LOAD DATA
+# =========================
 settings = safe_load(SETTINGS_FILE, {})
 data = safe_load(DATA_FILE, {})
 
 # =========================
-# GET / INIT GUILD STATE
+# PER SERVER STATE
 # =========================
 def get_state(guild_id):
+
     gid = str(guild_id)
 
     if gid not in data:
@@ -60,16 +93,39 @@ def get_state(guild_id):
 
     return data[gid]
 
+
 # =========================
-# SET CHANNEL COMMAND
+# SET CHANNEL
 # =========================
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
-    settings[str(ctx.guild.id)] = ctx.channel.id
-    await safe_save(SETTINGS_FILE, settings)
 
-    await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
+    settings[str(ctx.guild.id)] = ctx.channel.id
+
+    await safe_save(
+        SETTINGS_FILE,
+        settings
+    )
+
+    await ctx.send(
+        f"✅ Counting channel set to {ctx.channel.mention}"
+    )
+
+
+# =========================
+# SHOW STATUS
+# =========================
+@bot.command()
+async def count(ctx):
+
+    state = get_state(ctx.guild.id)
+
+    await ctx.send(
+        f"📊 Current Count: {state['count']}\n"
+        f"❤️ Lives: {state['lives']}"
+    )
+
 
 # =========================
 # MESSAGE EVENT
@@ -83,37 +139,57 @@ async def on_message(message):
     if not message.guild:
         return
 
-    gid = str(message.guild.id)
+    guild_id = str(message.guild.id)
+
     state = get_state(message.guild.id)
 
-    # channel restriction
-    if gid in settings and message.channel.id != settings[gid]:
-        return
+    # Process commands first
+    await bot.process_commands(message)
+
+    # Restrict counting channel if set
+    if guild_id in settings:
+
+        if message.channel.id != settings[guild_id]:
+            return
 
     if not message.content.isdigit():
         return
 
     number = int(message.content)
+
     expected = state["count"] + 1
 
-    # =========================
-    # ORDER FIX (IMPORTANT)
-    # =========================
-
-    # 1. WRONG NUMBER CHECK FIRST
+    # -------------------------
+    # WRONG NUMBER FIRST
+    # -------------------------
     if number != expected:
-        await handle_wrong(message, state, expected, "Wrong number")
+
+        await handle_wrong(
+            message,
+            state,
+            expected,
+            "Wrong number"
+        )
+
         return
 
-    # 2. SAME USER CHECK AFTER VALID NUMBER
-    # (prevents spam triggering when already wrong)
-    if message.author.id == state["last_user"]:
-        await handle_wrong(message, state, expected, "Same user cannot count twice")
+    # -------------------------
+    # SAME USER RULE
+    # -------------------------
+    if state["last_user"] == message.author.id:
+
+        await handle_wrong(
+            message,
+            state,
+            expected,
+            "Same user cannot count twice"
+        )
+
         return
 
-    # =========================
+    # -------------------------
     # CORRECT NUMBER
-    # =========================
+    # -------------------------
     state["count"] = number
     state["last_user"] = message.author.id
 
@@ -122,14 +198,28 @@ async def on_message(message):
     except:
         pass
 
+    # Milestone restore
+    if number % 1000 == 0:
+
+        state["lives"] = 3
+
+        await message.channel.send(
+            f"🎉 Milestone {number} reached!\n"
+            f"❤️ Lives restored."
+        )
+
     await safe_save(DATA_FILE, data)
 
-    await bot.process_commands(message)
 
 # =========================
-# WRONG HANDLER (STABLE)
+# WRONG HANDLER
 # =========================
-async def handle_wrong(message, state, expected, reason):
+async def handle_wrong(
+    message,
+    state,
+    expected,
+    reason
+):
 
     state["lives"] -= 1
 
@@ -138,68 +228,123 @@ async def handle_wrong(message, state, expected, reason):
     except:
         pass
 
-    hearts = "❤️" * max(state["lives"], 0)
-
     await message.channel.send(
         f"❌ {reason}\n"
         f"Expected: {expected}\n"
-        f"Lives: {hearts if hearts else '0'}"
+        f"Lives: {state['lives']}"
     )
 
-    # RESET
     if state["lives"] <= 0:
-        state["count"] = 0
-        state["lives"] = 3
-        state["last_user"] = None
 
-        await message.channel.send("💥 Game Reset! Starting again from 1.")
+        state["count"] = 0
+        state["last_user"] = None
+        state["lives"] = 3
+
+        await message.channel.send(
+            "💥 Game Reset!\n"
+            "Start again from 1."
+        )
 
     await safe_save(DATA_FILE, data)
 
-# =========================
-# ERROR HANDLING (CRASH PROTECTION)
-# =========================
-@bot.event
-async def on_error(event, *args, **kwargs):
-    print(f"[ERROR] in {event}")
 
 # =========================
-# READY EVENT
+# KEEP ALIVE WEB SERVER
+# =========================
+async def start_web():
+
+    app = web.Application()
+
+    async def home(request):
+        return web.Response(
+            text="Counter Bot Online"
+        )
+
+    app.router.add_get("/", home)
+
+    port = int(
+        os.getenv("PORT", 10000)
+    )
+
+    runner = web.AppRunner(app)
+
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        port
+    )
+
+    await site.start()
+
+    print(f"Web server started on {port}")
+
+
+# =========================
+# SELF PING EVERY 10 MIN
+# =========================
+@tasks.loop(minutes=10)
+async def self_ping():
+
+    if not RENDER_URL:
+        return
+
+    try:
+
+        async with ClientSession() as session:
+
+            async with session.get(RENDER_URL) as resp:
+
+                print(
+                    f"Self Ping: {resp.status}"
+                )
+
+    except Exception as e:
+
+        print(
+            f"Self Ping Failed: {e}"
+        )
+
+
+# =========================
+# READY
 # =========================
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+
+    print(
+        f"Logged in as {bot.user}"
+    )
+
+    if not self_ping.is_running():
+        self_ping.start()
+
 
 # =========================
-# WEB SERVER (RENDER FIX)
+# ERROR HANDLER
 # =========================
-async def start_web():
-    app = web.Application()
+@bot.event
+async def on_error(event, *args, **kwargs):
 
-    async def health(request):
-        return web.Response(text="OK")
+    print(f"Error in {event}")
 
-    app.router.add_get("/", health)
-
-    port = int(os.getenv("PORT", 10000))
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    print(f"Web server running on port {port}")
 
 # =========================
-# MAIN START
+# MAIN
 # =========================
 async def main():
+
     await start_web()
+
     await bot.start(TOKEN)
 
-if not TOKEN:
-    raise ValueError("DISCORD_TOKEN is missing")
 
-print("Bot starting...")
+if not TOKEN:
+    raise ValueError(
+        "DISCORD_TOKEN missing"
+    )
+
+print("Starting Counter Bot...")
+
 asyncio.run(main())
