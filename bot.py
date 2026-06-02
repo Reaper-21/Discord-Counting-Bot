@@ -7,8 +7,7 @@ import os
 # CONFIG
 # -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1511334289084514416  # your counting channel ID
-
+SETTINGS_FILE = "settings.json"
 DATA_FILE = "game.json"
 
 # -------------------------
@@ -21,32 +20,34 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# SAFE DATA LOAD
+# SERVER SETTINGS (CHANNEL PER GUILD)
+# -------------------------
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_settings():
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(guild_channels, f, indent=4)
+
+guild_channels = load_settings()
+
+# -------------------------
+# GAME DATA
 # -------------------------
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        data = {
-            "count": 0,
-            "last_user": None,
-            "lives": 3,
-            "paused": False,
-            "last_message_id": None
-        }
-        with open(DATA_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-        return data
-
-    try:
+    if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             return json.load(f)
-    except:
-        return {
-            "count": 0,
-            "last_user": None,
-            "lives": 3,
-            "paused": False,
-            "last_message_id": None
-        }
+    return {
+        "count": 0,
+        "last_user": None,
+        "lives": 3,
+        "paused": False,
+        "last_message_id": None
+    }
 
 def save_data():
     global data
@@ -56,11 +57,25 @@ def save_data():
 data = load_data()
 
 # -------------------------
-# READY EVENT
+# READY
 # -------------------------
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+
+# -------------------------
+# SET CHANNEL COMMAND (ADMIN)
+# -------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setchannel(ctx):
+    guild_channels[ctx.guild.id] = ctx.channel.id
+    save_settings()
+
+    await ctx.send(
+        f"✅ Counting channel set to {ctx.channel.mention}\n"
+        f"Bot will now only work here."
+    )
 
 # -------------------------
 # MESSAGE EVENT
@@ -71,8 +86,17 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.id != CHANNEL_ID:
+    if not message.guild:
         return
+
+    guild_id = message.guild.id
+
+    # -------------------------
+    # CHANNEL LOGIC
+    # -------------------------
+    if guild_id in guild_channels:
+        if message.channel.id != guild_channels[guild_id]:
+            return
 
     if not message.content.isdigit():
         return
@@ -92,13 +116,13 @@ async def on_message(message):
         await handle_wrong(message, expected, "Wrong number")
         return
 
-    # correct answer
+    # correct
     await message.add_reaction("✅")
 
     data["count"] = number
     data["last_user"] = message.author.id
 
-    # milestone reset lives
+    # milestone
     if number % 1000 == 0:
         data["lives"] = 3
         await message.channel.send(
@@ -107,7 +131,6 @@ async def on_message(message):
 
     save_data()
 
-    # IMPORTANT: allows commands to still work
     await bot.process_commands(message)
 
 # -------------------------
@@ -166,7 +189,7 @@ async def on_reaction_add(reaction, user):
     )
 
 # -------------------------
-# RUN BOT (SAFE)
+# RUN BOT
 # -------------------------
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN is missing in environment variables!")
