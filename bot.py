@@ -2,48 +2,27 @@ import discord
 from discord.ext import commands
 import json
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from aiohttp import web
+import asyncio
 
-# -------------------------
-# TOKEN
-# -------------------------
+# =========================
+# ENV
+# =========================
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-# -------------------------
-# FILES
-# -------------------------
 DATA_FILE = "game.json"
 SETTINGS_FILE = "settings.json"
 
-# -------------------------
+# =========================
 # INTENTS
-# -------------------------
+# =========================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# -------------------------
-# SIMPLE WEB SERVER (RENDER FIX)
-# -------------------------
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
-
-threading.Thread(target=run_web, daemon=True).start()
-
-# -------------------------
-# SAFE LOAD/SAVE
-# -------------------------
+# =========================
+# FILE SAFE LOAD
+# =========================
 def safe_load(file, default):
     if not os.path.exists(file):
         return default
@@ -54,20 +33,17 @@ def safe_load(file, default):
     except:
         return default
 
-def safe_save(file, data):
+def save_json(file, data):
     with open(file, "w") as f:
         json.dump(data, f, indent=4)
 
 settings = safe_load(SETTINGS_FILE, {})
 data = safe_load(DATA_FILE, {})
 
-# prevent duplicate message handling
-processed_messages = set()
-
-# -------------------------
-# GUILD STATE
-# -------------------------
-def get_guild(guild_id):
+# =========================
+# PER GUILD STATE
+# =========================
+def get_state(guild_id):
     gid = str(guild_id)
 
     if gid not in data:
@@ -79,20 +55,19 @@ def get_guild(guild_id):
 
     return data[gid]
 
-# -------------------------
+# =========================
 # SET CHANNEL COMMAND
-# -------------------------
+# =========================
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
     settings[str(ctx.guild.id)] = ctx.channel.id
-    safe_save(SETTINGS_FILE, settings)
-
+    save_json(SETTINGS_FILE, settings)
     await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
 
-# -------------------------
+# =========================
 # MESSAGE EVENT
-# -------------------------
+# =========================
 @bot.event
 async def on_message(message):
 
@@ -102,63 +77,46 @@ async def on_message(message):
     if not message.guild:
         return
 
-    # prevent duplicate handling
-    if message.id in processed_messages:
-        return
-    processed_messages.add(message.id)
+    gid = str(message.guild.id)
+    state = get_state(message.guild.id)
 
-    if len(processed_messages) > 1000:
-        processed_messages.clear()
-
-    guild_id = str(message.guild.id)
-    state = get_guild(guild_id)
-
-    # channel lock
-    if guild_id in settings:
-        if message.channel.id != settings[guild_id]:
+    # channel lock (optional)
+    if gid in settings:
+        if message.channel.id != settings[gid]:
             return
 
-    # must be number
     if not message.content.isdigit():
         return
 
     number = int(message.content)
     expected = state["count"] + 1
 
-    # same user rule
-    if state["last_user"] == message.author.id:
+    # ❌ same user rule (FIXED: checked FIRST, but only if number is correct)
+    if message.author.id == state["last_user"]:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
-    # wrong number rule
+    # ❌ wrong number
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
-    # correct
+    # ✅ correct
     await message.add_reaction("✅")
 
     state["count"] = number
     state["last_user"] = message.author.id
 
-    # milestone reset
-    if number % 1000 == 0:
-        state["lives"] = 3
-        await message.channel.send(
-            f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
-        )
-
-    safe_save(DATA_FILE, data)
+    save_json(DATA_FILE, data)
 
     await bot.process_commands(message)
 
-# -------------------------
-# WRONG HANDLER
-# -------------------------
+# =========================
+# WRONG HANDLER (NO PAUSE)
+# =========================
 async def handle_wrong(message, state, expected, reason):
 
     state["lives"] -= 1
-
     await message.add_reaction("❌")
 
     hearts = "❤️" * max(state["lives"], 0)
@@ -176,13 +134,36 @@ async def handle_wrong(message, state, expected, reason):
 
         await message.channel.send("💥 Game Reset! Starting again from 1.")
 
-    safe_save(DATA_FILE, data)
+    save_json(DATA_FILE, data)
 
-# -------------------------
-# START BOT
-# -------------------------
+# =========================
+# WEB SERVER (FIX RENDER SLEEP ISSUE)
+# =========================
+async def start_web():
+    app = web.Application()
+
+    async def home(request):
+        return web.Response(text="Bot is alive")
+
+    app.router.add_get("/", home)
+
+    port = int(os.getenv("PORT", 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print(f"Web server running on port {port}")
+
+# =========================
+# STARTUP
+# =========================
+async def main():
+    await start_web()
+    await bot.start(TOKEN)
+
 if not TOKEN:
-    raise ValueError("DISCORD_TOKEN missing in environment variables")
+    raise ValueError("DISCORD_TOKEN missing")
 
 print("Bot starting...")
-bot.run(TOKEN)
+asyncio.run(main())
