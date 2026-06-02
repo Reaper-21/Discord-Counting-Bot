@@ -3,6 +3,9 @@ from discord.ext import commands
 import json
 import os
 
+# -------------------------
+# CONFIG
+# -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATA_FILE = "game.json"
@@ -33,7 +36,7 @@ def save_settings():
 settings = load_settings()
 
 # -------------------------
-# GAME DATA (PER SERVER)
+# GAME DATA (SAFE + MULTI-SERVER)
 # -------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -53,12 +56,22 @@ data = load_data()
 
 def get_guild(guild_id):
     gid = str(guild_id)
+
     if gid not in data:
         data[gid] = {
             "count": 0,
             "last_user": None,
             "lives": 3
         }
+
+    # safety repair (prevents broken states)
+    if "count" not in data[gid]:
+        data[gid]["count"] = 0
+    if "last_user" not in data[gid]:
+        data[gid]["last_user"] = None
+    if "lives" not in data[gid]:
+        data[gid]["lives"] = 3
+
     return data[gid]
 
 # -------------------------
@@ -98,23 +111,23 @@ async def on_message(message):
     number = int(message.content)
     expected = state["count"] + 1
 
-    # wrong user twice rule
-    if message.author.id == state["last_user"]:
+    # prevent same user twice
+    if state["last_user"] is not None and message.author.id == state["last_user"]:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
-    # wrong number rule
+    # wrong number
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
-    # correct
+    # correct number
     await message.add_reaction("✅")
 
     state["count"] = number
     state["last_user"] = message.author.id
 
-    # milestone bonus
+    # milestone reward
     if number % 1000 == 0:
         state["lives"] = 3
         await message.channel.send(
@@ -125,7 +138,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # -------------------------
-# WRONG HANDLER (NO PAUSE)
+# WRONG HANDLER (NO PAUSE SYSTEM)
 # -------------------------
 async def handle_wrong(message, state, expected, reason):
 
@@ -141,7 +154,7 @@ async def handle_wrong(message, state, expected, reason):
         f"Lives left: {hearts if hearts else '0'}"
     )
 
-    # RESET if no lives
+    # reset game if no lives
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
