@@ -2,12 +2,23 @@ import discord
 from discord.ext import commands
 import json
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# -------------------------
+# TOKEN
+# -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# -------------------------
+# FILES
+# -------------------------
 DATA_FILE = "game.json"
 SETTINGS_FILE = "settings.json"
 
+# -------------------------
+# INTENTS
+# -------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
@@ -15,7 +26,23 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# SAFE LOAD / SAVE
+# SIMPLE WEB SERVER (RENDER FIX)
+# -------------------------
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# -------------------------
+# SAFE LOAD/SAVE
 # -------------------------
 def safe_load(file, default):
     if not os.path.exists(file):
@@ -34,11 +61,11 @@ def safe_save(file, data):
 settings = safe_load(SETTINGS_FILE, {})
 data = safe_load(DATA_FILE, {})
 
-# prevent duplicate processing
+# prevent duplicate message handling
 processed_messages = set()
 
 # -------------------------
-# GET GUILD STATE
+# GUILD STATE
 # -------------------------
 def get_guild(guild_id):
     gid = str(guild_id)
@@ -69,26 +96,24 @@ async def setchannel(ctx):
 @bot.event
 async def on_message(message):
 
-    # ignore bots
     if message.author.bot:
         return
 
     if not message.guild:
         return
 
-    # prevent duplicate processing of SAME message
+    # prevent duplicate handling
     if message.id in processed_messages:
         return
     processed_messages.add(message.id)
 
-    # keep memory small
     if len(processed_messages) > 1000:
         processed_messages.clear()
 
     guild_id = str(message.guild.id)
     state = get_guild(guild_id)
 
-    # channel lock (if set)
+    # channel lock
     if guild_id in settings:
         if message.channel.id != settings[guild_id]:
             return
@@ -100,17 +125,17 @@ async def on_message(message):
     number = int(message.content)
     expected = state["count"] + 1
 
-    # ❌ same user rule
+    # same user rule
     if state["last_user"] == message.author.id:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
-    # ❌ wrong number rule
+    # wrong number rule
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
-    # ✅ correct number
+    # correct
     await message.add_reaction("✅")
 
     state["count"] = number
@@ -144,7 +169,6 @@ async def handle_wrong(message, state, expected, reason):
         f"Lives: {hearts if hearts else '0'}"
     )
 
-    # reset game
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
