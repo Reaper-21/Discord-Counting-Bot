@@ -167,5 +167,6 @@ async def on_reaction_add(reaction, user):
 # -------------------------
 if not TOKEN:
     print("ERROR: TOKEN not found in environment variables!")
+print("TOKEN LOADED:", repr(TOKEN))
 
 bot.run(TOKEN)
