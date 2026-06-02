@@ -2,11 +2,7 @@ import discord
 from discord.ext import commands
 import json
 import os
-import asyncio
 
-# -------------------------
-# CONFIG
-# -------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATA_FILE = "game.json"
@@ -14,58 +10,38 @@ SETTINGS_FILE = "settings.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# LOCKS (prevents duplicate processing)
+# SAFE LOAD / SAVE
 # -------------------------
-guild_locks = {}
+def safe_load(file, default):
+    if not os.path.exists(file):
+        return default
+    try:
+        with open(file, "r") as f:
+            content = f.read().strip()
+            return json.loads(content) if content else default
+    except:
+        return default
 
-def get_lock(guild_id):
-    if guild_id not in guild_locks:
-        guild_locks[guild_id] = asyncio.Lock()
-    return guild_locks[guild_id]
-
-# -------------------------
-# SETTINGS
-# -------------------------
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            return json.loads(open(SETTINGS_FILE).read() or "{}")
-        except:
-            return {}
-    return {}
-
-def save_settings():
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=4)
-
-settings = load_settings()
-
-# -------------------------
-# GAME DATA
-# -------------------------
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            return json.loads(open(DATA_FILE).read() or "{}")
-        except:
-            return {}
-    return {}
-
-def save_data():
-    with open(DATA_FILE, "w") as f:
+def safe_save(file, data):
+    with open(file, "w") as f:
         json.dump(data, f, indent=4)
 
-data = load_data()
+settings = safe_load(SETTINGS_FILE, {})
+data = safe_load(DATA_FILE, {})
+
+# prevent duplicate processing
+processed_messages = set()
 
 # -------------------------
-# INIT GUILD STATE
+# GET GUILD STATE
 # -------------------------
-def get_state(gid):
-    gid = str(gid)
+def get_guild(guild_id):
+    gid = str(guild_id)
 
     if gid not in data:
         data[gid] = {
@@ -77,75 +53,79 @@ def get_state(gid):
     return data[gid]
 
 # -------------------------
-# SET CHANNEL
+# SET CHANNEL COMMAND
 # -------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
     settings[str(ctx.guild.id)] = ctx.channel.id
-    save_settings()
+    safe_save(SETTINGS_FILE, settings)
+
     await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
 
 # -------------------------
-# MAIN LOGIC (FIXED + STABLE)
+# MESSAGE EVENT
 # -------------------------
 @bot.event
 async def on_message(message):
 
+    # ignore bots
     if message.author.bot:
         return
 
     if not message.guild:
         return
 
-    gid = str(message.guild.id)
-
-    # channel restriction
-    if gid in settings and message.channel.id != settings[gid]:
+    # prevent duplicate processing of SAME message
+    if message.id in processed_messages:
         return
+    processed_messages.add(message.id)
 
+    # keep memory small
+    if len(processed_messages) > 1000:
+        processed_messages.clear()
+
+    guild_id = str(message.guild.id)
+    state = get_guild(guild_id)
+
+    # channel lock (if set)
+    if guild_id in settings:
+        if message.channel.id != settings[guild_id]:
+            return
+
+    # must be number
     if not message.content.isdigit():
         return
 
-    async with get_lock(gid):  # 🔥 CRITICAL: prevents duplicate runs
+    number = int(message.content)
+    expected = state["count"] + 1
 
-        state = get_state(gid)
+    # ❌ same user rule
+    if state["last_user"] == message.author.id:
+        await handle_wrong(message, state, expected, "Same user cannot count twice")
+        return
 
-        number = int(message.content)
-        expected = state["count"] + 1
+    # ❌ wrong number rule
+    if number != expected:
+        await handle_wrong(message, state, expected, "Wrong number")
+        return
 
-        # =========================
-        # RULE 1: SAME USER FIRST
-        # =========================
-        if state["last_user"] == message.author.id:
-            await handle_wrong(message, state, expected, "Same user cannot count twice")
-            save_data()
-            return
+    # ✅ correct number
+    await message.add_reaction("✅")
 
-        # =========================
-        # RULE 2: WRONG NUMBER
-        # =========================
-        if number != expected:
-            await handle_wrong(message, state, expected, "Wrong number")
-            save_data()
-            return
+    state["count"] = number
+    state["last_user"] = message.author.id
 
-        # =========================
-        # RULE 3: CORRECT
-        # =========================
-        await message.add_reaction("✅")
+    # milestone reset
+    if number % 1000 == 0:
+        state["lives"] = 3
+        await message.channel.send(
+            f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
+        )
 
-        state["count"] = number
-        state["last_user"] = message.author.id
+    safe_save(DATA_FILE, data)
 
-        # milestone
-        if number % 1000 == 0:
-            state["lives"] = 3
-            await message.channel.send(
-                f"🎉 Milestone reached: {number}! Lives restored ❤️❤️❤️"
-            )
-
-        save_data()
+    await bot.process_commands(message)
 
 # -------------------------
 # WRONG HANDLER
@@ -164,6 +144,7 @@ async def handle_wrong(message, state, expected, reason):
         f"Lives: {hearts if hearts else '0'}"
     )
 
+    # reset game
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
@@ -171,11 +152,13 @@ async def handle_wrong(message, state, expected, reason):
 
         await message.channel.send("💥 Game Reset! Starting again from 1.")
 
+    safe_save(DATA_FILE, data)
+
 # -------------------------
 # START BOT
 # -------------------------
 if not TOKEN:
-    raise ValueError("DISCORD_TOKEN missing")
+    raise ValueError("DISCORD_TOKEN missing in environment variables")
 
 print("Bot starting...")
 bot.run(TOKEN)
