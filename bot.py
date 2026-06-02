@@ -17,7 +17,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # -------------------------
-# SETTINGS (per server channel)
+# SETTINGS
 # -------------------------
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -36,7 +36,7 @@ def save_settings():
 settings = load_settings()
 
 # -------------------------
-# GAME DATA (SAFE + MULTI-SERVER)
+# GAME DATA
 # -------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -54,6 +54,9 @@ def save_data():
 
 data = load_data()
 
+# -------------------------
+# GET / INIT GUILD DATA
+# -------------------------
 def get_guild(guild_id):
     gid = str(guild_id)
 
@@ -63,14 +66,6 @@ def get_guild(guild_id):
             "last_user": None,
             "lives": 3
         }
-
-    # safety repair (prevents broken states)
-    if "count" not in data[gid]:
-        data[gid]["count"] = 0
-    if "last_user" not in data[gid]:
-        data[gid]["last_user"] = None
-    if "lives" not in data[gid]:
-        data[gid]["lives"] = 3
 
     return data[gid]
 
@@ -82,11 +77,10 @@ def get_guild(guild_id):
 async def setchannel(ctx):
     settings[str(ctx.guild.id)] = ctx.channel.id
     save_settings()
-
     await ctx.send(f"✅ Counting channel set to {ctx.channel.mention}")
 
 # -------------------------
-# MESSAGE EVENT
+# MESSAGE EVENT (FIXED CORE LOGIC)
 # -------------------------
 @bot.event
 async def on_message(message):
@@ -97,10 +91,8 @@ async def on_message(message):
     if not message.guild:
         return
 
+    # channel restriction
     guild_id = str(message.guild.id)
-    state = get_guild(guild_id)
-
-    # channel lock
     if guild_id in settings:
         if message.channel.id != settings[guild_id]:
             return
@@ -108,26 +100,32 @@ async def on_message(message):
     if not message.content.isdigit():
         return
 
+    state = get_guild(guild_id)
+
     number = int(message.content)
     expected = state["count"] + 1
 
-    # prevent same user twice
-    if state["last_user"] is not None and message.author.id == state["last_user"]:
+    # -------------------------
+    # IMPORTANT FIX: STRICT SINGLE OUTCOME PER MESSAGE
+    # -------------------------
+
+    # RULE 1: same user (highest priority)
+    if state["last_user"] == message.author.id:
         await handle_wrong(message, state, expected, "Same user cannot count twice")
         return
 
-    # wrong number
+    # RULE 2: wrong number
     if number != expected:
         await handle_wrong(message, state, expected, "Wrong number")
         return
 
-    # correct number
+    # RULE 3: correct number
     await message.add_reaction("✅")
 
     state["count"] = number
     state["last_user"] = message.author.id
 
-    # milestone reward
+    # milestone
     if number % 1000 == 0:
         state["lives"] = 3
         await message.channel.send(
@@ -135,13 +133,13 @@ async def on_message(message):
         )
 
     save_data()
-    await bot.process_commands(message)
 
 # -------------------------
-# WRONG HANDLER (NO PAUSE SYSTEM)
+# WRONG HANDLER (FIXED - NO CASCADE BUGS)
 # -------------------------
 async def handle_wrong(message, state, expected, reason):
 
+    # reduce lives
     state["lives"] -= 1
 
     await message.add_reaction("❌")
@@ -154,7 +152,7 @@ async def handle_wrong(message, state, expected, reason):
         f"Lives left: {hearts if hearts else '0'}"
     )
 
-    # reset game if no lives
+    # reset if dead
     if state["lives"] <= 0:
         state["count"] = 0
         state["lives"] = 3
